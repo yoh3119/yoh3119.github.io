@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D City Mission Drive</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            width: 100%;
+            height: 100%;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        #top-ui {
+            padding: 20px;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            text-shadow: 2px 2px 0 #000;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        #level-info {
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        #message-area {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 48px;
+            font-weight: bold;
+            color: yellow;
+            text-shadow: 3px 3px 0 #000;
+            text-align: center;
+            display: none;
+        }
+
+        #loading-msg {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-family: sans-serif;
+            font-size: 24px;
+        }
+
+        #minimap-container {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 200px;
+            height: 200px;
+            border: 4px solid #fff;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 50%;
+            /* Radar style */
+            overflow: hidden;
+        }
+
+        #minimap {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+    <!-- Import Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+
+<body>
+    <div id="loading-msg">Loading Game Resources...</div>
+    <div id="ui-layer" style="display:none;">
+        <div id="top-ui">
+            <div id="level-info">Level: 1</div>
+            <div>Use ARROW KEYS to Drive</div>
+        </div>
+        <div id="message-area">STAGE CLEAR!</div>
+        <div id="minimap-container">
+            <canvas id="minimap" width="200" height="200"></canvas>
+        </div>
+    </div>
+
+    <script>
+        window.onload = function () {
+            try {
+                if (typeof THREE === 'undefined') {
+                    throw new Error("Three.js failed to load. Please check your internet connection.");
+                }
+                initGame();
+            } catch (e) {
+                document.getElementById('loading-msg').innerText = "Error: " + e.message;
+                console.error(e);
+            }
+        };
+
+        // --- Global State ---
+        let scene, camera, renderer;
+        let carGroup, goal, cityGroup, ground;
+        let groundMat, buildingMat, goalMat;
+        let minimapCanvas, minimapCtx;
+
+        let currentLevel = 1;
+        let isGameActive = false;
+        let buildings = [];
+        let worldSize = 2000;
+        let gameGoalData = null;
+
+        // --- Params ---
+        const BLOCK_SIZE = 100;
+        const STREET_WIDTH = 30;
+        const ACCEL = 0.05;
+        const MAX_SPEED = 3.0;
+        const TURN_SPEED = 0.04;
+        const FRICTION = 0.98;
+
+        // --- Controls ---
+        let speed = 0;
+        const keys = {};
+        window.addEventListener('keydown', e => keys[e.key] = true);
+        window.addEventListener('keyup', e => keys[e.key] = false);
+        window.addEventListener('resize', onWindowResize, false);
+
+        function initGame() {
+            // Setup Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 20, 400);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(100, 200, 50);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
+            dirLight.shadow.camera.near = 0.5;
+            dirLight.shadow.camera.far = 600;
+            const d = 500;
+            dirLight.shadow.camera.left = -d;
+            dirLight.shadow.camera.right = d;
+            dirLight.shadow.camera.top = d;
+            dirLight.shadow.camera.bottom = -d;
+            scene.add(dirLight);
+
+            // Materials
+            groundMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.9 });
+            buildingMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.2 });
+            goalMat = new THREE.MeshStandardMaterial({ color: 0x00ff00, emissive: 0x00aa00 });
+
+            // Groups
+            cityGroup = new THREE.Group();
+            scene.add(cityGroup);
+
+            carGroup = new THREE.Group();
+            scene.add(carGroup);
+
+            // Car Visuals
+            const hood = new THREE.Mesh(new THREE.BoxGeometry(2, 0.5, 2), new THREE.MeshStandardMaterial({ color: 0xff0000 }));
+            hood.position.set(0, -0.5, -1.5);
+            carGroup.add(hood);
+
+            // Minimap
+            minimapCanvas = document.getElementById('minimap');
+            minimapCtx = minimapCanvas.getContext('2d');
+
+            // Start Level 1
+            initLevel(1);
+
+            // UI
+            document.getElementById('loading-msg').style.display = 'none';
+            document.getElementById('ui-layer').style.display = 'block';
+
+            // Start Loop
+            animate();
+        }
+
+        function initLevel(level) {
+            isGameActive = false;
+            currentLevel = level;
+            document.getElementById('level-info').innerText = `Level: ${level}`;
+            showMessage(`Level ${level} Start!`, 2000);
+
+            // Clear
+            while (cityGroup.children.length > 0) { cityGroup.remove(cityGroup.children[0]); }
+            buildings = [];
+
+            const mapScale = 1 + (level * 0.2);
+            const levelWorldSize = worldSize * mapScale;
+
+            // Ground
+            if (ground) scene.remove(ground);
+            ground = new THREE.Mesh(new THREE.PlaneGeometry(levelWorldSize, levelWorldSize), groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // Buildings
+            const buildingSize = BLOCK_SIZE - STREET_WIDTH;
+            const halfSize = levelWorldSize / 2;
+            const roadSpots = [];
+
+            for (let x = -halfSize; x < halfSize; x += BLOCK_SIZE) {
+                for (let z = -halfSize; z < halfSize; z += BLOCK_SIZE) {
+                    // Correct center offset
+                    const cx = x + BLOCK_SIZE / 2;
+                    const cz = z + BLOCK_SIZE / 2;
+
+                    // Spawn Area
+                    if (Math.abs(x) < BLOCK_SIZE && Math.abs(z) < BLOCK_SIZE) {
+                        roadSpots.push({ x: cx, z: cz });
+                        continue;
+                    }
+
+                    const density = Math.min(0.6 + (level * 0.03), 0.90);
+
+                    if (Math.random() < density) {
+                        const h = 20 + Math.random() * 50 + (level * 5);
+                        const b = new THREE.Mesh(new THREE.BoxGeometry(buildingSize, 1, buildingSize), buildingMat);
+                        b.position.set(cx, h / 2, cz);
+                        b.scale.y = h;
+                        b.castShadow = true;
+                        b.receiveShadow = true;
+                        cityGroup.add(b);
+
+                        buildings.push({
+                            minX: cx - buildingSize / 2, maxX: cx + buildingSize / 2,
+                            minZ: cz - buildingSize / 2, maxZ: cz + buildingSize / 2
+                        });
+                    } else {
+                        roadSpots.push({ x: cx, z: cz });
+                    }
+                }
+            }
+
+            // Reset Car
+            carGroup.position.set(0, 1.5, 0);
+            carGroup.rotation.set(0, 0, 0);
+            speed = 0;
+
+            // Place Goal
+            if (roadSpots.length > 0) {
+                let spot = roadSpots[Math.floor(Math.random() * roadSpots.length)];
+                // Try to find far spot
+                let attempts = 0;
+                while (attempts < 50) {
+                    const s = roadSpots[Math.floor(Math.random() * roadSpots.length)];
+                    const dist = Math.sqrt(s.x * s.x + s.z * s.z);
+                    if (dist > 300) {
+                        spot = s;
+                        break;
+                    }
+                    attempts++;
+                }
+
+                if (goal) scene.remove(goal);
+                goal = new THREE.Group();
+
+                // Goal Beacon
+                const beaconGeo = new THREE.CylinderGeometry(2, 2, 200, 16);
+                const beacon = new THREE.Mesh(beaconGeo, new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.5 }));
+                beacon.position.y = 100;
+                goal.add(beacon);
+
+                // Goal Base
+                const base = new THREE.Mesh(new THREE.CylinderGeometry(10, 10, 1, 32), goalMat);
+                goal.add(base);
+
+                goal.position.set(spot.x, 0, spot.z);
+                scene.add(goal);
+
+                gameGoalData = { x: spot.x, z: spot.z, radius: 10 };
+            } else {
+                console.error("No road spots found!");
+            }
+
+            setTimeout(() => { isGameActive = true; }, 1000);
+        }
+
+        function checkCollision(nextX, nextZ) {
+            const r = 2;
+            for (let b of buildings) {
+                if (nextX + r > b.minX && nextX - r < b.maxX &&
+                    nextZ + r > b.minZ && nextZ - r < b.maxZ) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function showMessage(text, duration = 2000) {
+            const msgEl = document.getElementById('message-area');
+            if (!msgEl) return;
+            msgEl.innerText = text;
+            msgEl.style.display = 'block';
+            if (duration > 0) {
+                setTimeout(() => { msgEl.style.display = 'none'; }, duration);
+            }
+        }
+
+        function failLevel() {
+            if (!isGameActive) return;
+            isGameActive = false;
+            showMessage("CRASHED!", 0);
+            speed = 0;
+            setTimeout(() => { initLevel(currentLevel); }, 2000);
+        }
+
+        function winLevel() {
+            if (!isGameActive) return;
+            isGameActive = false;
+            showMessage("GOAL REACHED!", 0);
+            speed = 0;
+            setTimeout(() => { initLevel(currentLevel + 1); }, 2000);
+        }
+
+        function drawMinimap() {
+            if (!minimapCtx || !carGroup || !goal) return;
+
+            // Clear
+            minimapCtx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+            minimapCtx.fillRect(0, 0, 200, 200);
+
+            const mapRange = 500;
+            const mapCenter = 100;
+            const scale = 100 / mapRange;
+
+            // Draw Buildings
+            minimapCtx.fillStyle = '#555';
+            for (let b of buildings) {
+                const minX_rel = (b.minX - carGroup.position.x) * scale;
+                const minZ_rel = (b.minZ - carGroup.position.z) * scale;
+                const w = (b.maxX - b.minX) * scale;
+                const h = (b.maxZ - b.minZ) * scale;
+
+                const drawX = mapCenter + minX_rel;
+                const drawY = mapCenter + minZ_rel;
+
+                if (drawX + w > 0 && drawX < 200 && drawY + h > 0 && drawY < 200) {
+                    minimapCtx.fillRect(drawX, drawY, w, h);
+                }
+            }
+
+            // Calculate Goal Position on Map
+            const dx = (goal.position.x - carGroup.position.x);
+            const dz = (goal.position.z - carGroup.position.z);
+            const dist = Math.sqrt(dx * dx + dz * dz);
+
+            // Map Coordinates relative to center, scaled
+            const mapDx = dx * scale;
+            const mapDz = dz * scale;
+
+            // Draw Goal or Arrow
+            const distPx = dist * scale;
+
+            if (distPx < 100) {
+                // Inside map
+                minimapCtx.fillStyle = '#0f0';
+                minimapCtx.beginPath();
+                minimapCtx.arc(mapCenter + mapDx, mapCenter + mapDz, 5, 0, Math.PI * 2);
+                minimapCtx.fill();
+            } else {
+                // Out of range - Draw Arrow on edge
+                // Angle towards goal in minimap space (Z is Down/Y)
+                const angle = Math.atan2(mapDz, mapDx);
+
+                const arrowDist = 90;
+                const ax = mapCenter + Math.cos(angle) * arrowDist;
+                const ay = mapCenter + Math.sin(angle) * arrowDist;
+
+                minimapCtx.fillStyle = '#0f0';
+                minimapCtx.save();
+                minimapCtx.translate(ax, ay);
+                minimapCtx.rotate(angle);
+
+                // Draw Arrow Triangle pointing right (angle 0)
+                minimapCtx.beginPath();
+                minimapCtx.moveTo(10, 0);
+                minimapCtx.lineTo(-5, -5);
+                minimapCtx.lineTo(-5, 5);
+                minimapCtx.closePath();
+                minimapCtx.fill();
+                minimapCtx.restore();
+            }
+
+            // Draw Player (Fixed Center)
+            minimapCtx.fillStyle = 'red';
+            minimapCtx.beginPath();
+            minimapCtx.arc(mapCenter, mapCenter, 4, 0, Math.PI * 2);
+            minimapCtx.fill();
+
+            // Heading
+            minimapCtx.strokeStyle = 'red';
+            minimapCtx.beginPath();
+            minimapCtx.moveTo(mapCenter, mapCenter);
+            const hx = -Math.sin(carGroup.rotation.y) * 10;
+            const hz = -Math.cos(carGroup.rotation.y) * 10;
+            minimapCtx.lineTo(mapCenter + hx, mapCenter + hz);
+            minimapCtx.stroke();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (!scene) return; // Not init yet
+
+            // Logic
+            if (isGameActive) {
+                const forward = keys.ArrowUp || keys.w;
+                const backward = keys.ArrowDown || keys.s;
+                const left = keys.ArrowLeft || keys.a;
+                const right = keys.ArrowRight || keys.d;
+
+                if (forward) speed += ACCEL;
+                else if (backward) speed -= ACCEL;
+                else speed *= FRICTION;
+
+                if (speed > MAX_SPEED) speed = MAX_SPEED;
+                if (speed < -MAX_SPEED / 2) speed = -MAX_SPEED / 2;
+                if (Math.abs(speed) < 0.001) speed = 0;
+
+                if (Math.abs(speed) > 0.01) {
+                    const dir = speed > 0 ? 1 : -1;
+                    if (left) carGroup.rotation.y += TURN_SPEED * dir;
+                    if (right) carGroup.rotation.y -= TURN_SPEED * dir;
+                }
+
+                const dx = -Math.sin(carGroup.rotation.y) * speed;
+                const dz = -Math.cos(carGroup.rotation.y) * speed;
+
+                const nextX = carGroup.position.x + dx;
+                const nextZ = carGroup.position.z + dz;
+
+                if (checkCollision(nextX, nextZ)) {
+                    failLevel();
+                } else {
+                    carGroup.position.x = nextX;
+                    carGroup.position.z = nextZ;
+                }
+
+                // Check Win
+                if (gameGoalData) {
+                    const dist = Math.sqrt((carGroup.position.x - gameGoalData.x) ** 2 + (carGroup.position.z - gameGoalData.z) ** 2);
+                    if (dist < gameGoalData.radius + 2) {
+                        winLevel();
+                    }
+                }
+            }
+
+            // Camera Follow
+            if (carGroup && camera) {
+                camera.position.set(carGroup.position.x, carGroup.position.y, carGroup.position.z);
+                camera.rotation.copy(carGroup.rotation);
+            }
+
+            drawMinimap();
+            if (renderer && scene && camera) renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            if (!camera || !renderer) return;
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+    </script>
+</body>
+
+</html>
