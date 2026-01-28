@@ -9,52 +9,75 @@ import FloatingCameraButton from "@/components/FloatingCameraButton"
 
 export default function Mainpage() {
   const { isMobile } = useViewport();
+
+  // -- Calendar & Recommendation State --
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [recommendedMeals, setRecommendedMeals] = useState({
+    breakfast: [] as any[],
+    lunch: [] as any[],
+    dinner: [] as any[],
+    snack: [] as any[]
+  });
+  const [recLoading, setRecLoading] = useState(false);
+  const [recError, setRecError] = useState<string | null>(null);
+
+  // -- Image Upload & Daily Record State --
   const [foods, setFoods] = useState<any[]>([]);
   const [totalCalories, setTotalCalories] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [uploadLoading, setUploadLoading] = useState(false);
 
-  // 사진 업로드 핸들러 (백엔드 연동 틀)
+  // 1. Handle Calendar Date Selection
+  const handleDateSelect = (date: Date) => {
+    setSelectedDate(date);
+  };
+
+  // 2. Fetch Recommended Meals on Date Change
+  useEffect(() => {
+    setRecLoading(true);
+    setRecError(null);
+
+    const offset = selectedDate.getTimezoneOffset() * 60000;
+    const dateString = new Date(selectedDate.getTime() - offset).toISOString().split('T')[0];
+
+    fetch(`http://localhost:8000/api/recommendation?date=${dateString}`)
+      .then((res) => {
+        if (!res.ok) throw new Error("서버 응답 오류");
+        return res.json();
+      })
+      .then((data) => {
+        setRecommendedMeals({
+          breakfast: data.breakfast || [],
+          lunch: data.lunch || [],
+          dinner: data.dinner || [],
+          snack: data.snack || []
+        });
+        setRecLoading(false);
+      })
+      .catch((err) => {
+        console.error("API 호출 실패:", err);
+        setRecError("데이터를 불러오는데 실패했습니다.");
+        setRecommendedMeals({ breakfast: [], lunch: [], dinner: [], snack: [] });
+        setRecLoading(false);
+      });
+  }, [selectedDate]);
+
+  // 3. Handle Image Upload (Mock -> State Update)
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setLoading(true);
-
+    setUploadLoading(true);
     try {
-      const formData = new FormData();
-      formData.append('file', file);
+      // Mock Upload Delay
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      console.log("이미지 업로드:", file.name);
 
-      // 동작 확인을 위한 더미 데이터
-      console.log("이미지 전송(임시):", file.name);
-      await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5초 대기
-
-      // 테스트용 더미 데이터 (백엔드 연동시 삭제)
-      /*
-      const randomFood = getRandomFood();
-
-      const mockData = {
-        food_id: Date.now(),
-        food_name: `[테스트] ${randomFood.name}`,
-        food_calories: randomFood.calories,
-        food_proteins: 0,
-        food_carbs: 0,
-        food_fats: 0,
-        // food_image: URL.createObjectURL(file) // 필요 시 이미지 미리보기 URL 사용
-      };
-
-      // 상태 업데이트
-      setFoods((prev: any) => [...prev, mockData]);
-      setTotalCalories((prev) => prev + mockData.food_calories);
-      */
-
-      alert(`'${file.name}' 음식 이미지가 업로드 되었습니다!`);
-
+      alert(`'${file.name}' 업로드 완료! (기능 연동 필요)`);
     } catch (error) {
       console.error("Upload Error:", error);
-      alert("분석 중 오류가 발생했습니다.");
+      alert("오류 발생");
     } finally {
-      setLoading(false);
-      // 포커스 문제 방지 등을 위해 input 초기화가 필요하다면 여기서 처리
+      setUploadLoading(false);
       e.target.value = '';
     }
   };
@@ -64,19 +87,22 @@ export default function Mainpage() {
       <header>
         <span style={{ marginLeft: '12px' }}>{isMobile ? '모바일' : 'PC'}</span>
       </header>
+      <h1 className="text-xl font-bold text-slate-800">메인</h1>
       <main>
         {/* 달력 (Calendar) */}
-        <Calendar />
-        {/* 오늘의 추천 식단 (main_food_eat_info) */}
-        <MainTodayLikeFood foods={foods} totalCalories={totalCalories} loading={loading} />
-        {/* 섭취 식단 정보 (main_food_eat_info) */}
+        <Calendar selectedDate={selectedDate} onDateSelect={handleDateSelect} />
+
+        {/* 오늘의 추천 식단 */}
+        <MainTodayLikeFood mealData={recommendedMeals} loading={recLoading} error={recError} />
+
+        {/* 섭취 식단 정보 */}
         <MainFoodEatInfo
           foods={foods}
           totalCalories={totalCalories}
           handleImageUpload={handleImageUpload}
         />
-        {/* -- */}
-        <FloatingCameraButton/>
+
+        <FloatingCameraButton />
       </main>
     </>
   );
